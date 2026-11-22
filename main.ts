@@ -1,39 +1,12 @@
-// Sokoban solver: push-optimal, room by room.
-//
-// A level from this competition's generator is a one-square-wide hallway with small rooms off it, each
-// room holding 3 or 4 boxes and as many goals, joined to the hallway by a single door. A box pushed
-// into the hallway can never reach a goal, so no box ever leaves its room and the level's push optimum
-// is the sum of its rooms' optima. The solver therefore:
-//
-//   1. cuts the hallway out of the board (its squares are dead: a box there reaches no goal) and takes
-//      each remaining part that holds boxes as one room;
-//   2. solves each room on its own with a breadth-first search over pushes — a state is the boxes'
-//      squares plus the lowest square of the player's reachable region, so the first solution the
-//      search meets is push-optimal — pruning pushes onto dead squares and pushes that freeze a
-//      2 x 2 block of walls and boxes with a box off its goal;
-//   3. walks the player between rooms along the hallway, which costs no pushes.
-//
-// If a level is not a set of rooms, or a room's search gives up, the solver falls back to the same
-// push search over the whole board, then to a move-level A* that at least solves the level, then to
-// an empty answer. Every budget is a count of states, never the clock, and every tie breaks by square
-// and direction order, so two runs write the same bytes.
+// Sokoban solver: push-optimal, room by room (the method is described in README.md).
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-
 const I = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const O = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-// The four directions: [dx, dy, walk letter, push letter].
-const DIRS = [
-  [0, -1, 'u', 'U'],
-  [0, 1, 'd', 'D'],
-  [-1, 0, 'l', 'L'],
-  [1, 0, 'r', 'R'],
-];
+const DIRS = [[0, -1, 'u', 'U'], [0, 1, 'd', 'D'], [-1, 0, 'l', 'L'], [1, 0, 'r', 'R']];
 const ROOM_STATES = 900_000;
 const BOARD_STATES = 2_000_000;
 const ASTAR_STATES = 1_500_000;
-
-// A level in XSB text: width and height, walls (the outer frame always wall), goals, boxes, player.
 function parseLevel(text) {
   const rows = text.split('\n').filter((r) => r.length > 0);
   const h = rows.length;
@@ -58,9 +31,6 @@ function parseLevel(text) {
       if (x === 0 || y === 0 || x === w - 1 || y === h - 1) wall[y * w + x] = 1;
   return { w, h, wall, goals, boxes: boxes.sort((a, b) => a - b), player };
 }
-
-// The squares from which a box alone can be pushed onto some goal, pulled back from the goals over
-// open floor: a box pushed from y along d lands on y + d, with the player standing on y - d.
 function liveSquares(w, wall, goals) {
   const live = new Uint8Array(wall.length);
   const queue = [];
@@ -81,9 +51,6 @@ function liveSquares(w, wall, goals) {
   }
   return live;
 }
-
-// Flood the player's reachable region from `from` around walls and the boxes in `occupied`, marking
-// `seen` with `stamp`; returns the region's lowest square, the region's name in a search state.
 function reach(w, wall, occupied, from, seen, stamp, stack) {
   let low = from;
   let n = 0;
@@ -103,8 +70,6 @@ function reach(w, wall, occupied, from, seen, stamp, stack) {
   }
   return low;
 }
-
-// Whether the box just pushed to `t` sits in a 2 x 2 block of only walls and boxes, one box off goal.
 function frozenBlock(w, wall, occupied, goal, t) {
   for (const a of [t, t - 1, t - w, t - w - 1]) {
     const b = a + 1;
@@ -118,8 +83,6 @@ function frozenBlock(w, wall, occupied, goal, t) {
   }
   return false;
 }
-
-// The shortest walk from `from` to `to` around walls and boxes, in lower LURD letters.
 function walkTo(w, wall, occupied, from, to) {
   if (from === to) return '';
   const prev = new Int32Array(wall.length).fill(-1);
@@ -142,16 +105,12 @@ function walkTo(w, wall, occupied, from, to) {
   for (let p = to; p !== from; p = prev[p]) s = how[p] + s;
   return s;
 }
-
 const encode = (boxes) => String.fromCharCode(...boxes);
 const decode = (s) => {
   const out = [];
   for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
   return out;
 };
-
-// The push-optimal solution of one board (a room, or a whole level as a fallback): breadth-first
-// over pushes, so the first solved state met is optimal. {pushes, moves} or null past maxStates.
 function solvePushes(board, maxStates) {
   const { w, wall, goals, player } = board;
   const size = wall.length;
@@ -167,7 +126,6 @@ function solvePushes(board, maxStates) {
   const mark = new Int32Array(size);
   const stack = new Int32Array(size);
   let stamp = 0;
-  // One search state: the boxes as a char-code string, the square the player stands on, its parent.
   const statesBoxes = [encode(start)];
   const statesPlayer = [player];
   const parent = [-1];
@@ -214,7 +172,6 @@ function solvePushes(board, maxStates) {
     for (const b of boxes) occupied[b] = 0;
   }
   if (found < 0) return null;
-  // Rebuild the moves: for each push on the path, walk to its push square, then push.
   const path = [];
   for (let s = found; s > 0; s = parent[s]) path.push(s);
   path.reverse();
@@ -237,9 +194,6 @@ function solvePushes(board, maxStates) {
   }
   return { pushes: path.length, moves };
 }
-
-// The level's rooms: cut the dead squares of the player's row (the hallway) out of the floor; each
-// part left that holds a box is a room. Null when the level is no set of rooms.
 function roomsOf(level) {
   const { w, wall, goals, boxes, player } = level;
   const live = liveSquares(w, wall, goals);
@@ -270,8 +224,6 @@ function roomsOf(level) {
   if (rooms.some((r) => r.boxes.length !== r.goals.length)) return null;
   return rooms.filter((r) => r.boxes.length > 0);
 }
-
-// The square the player stands on after `moves` from `player`, and the boxes after them.
 function endOf(w, wall, boxes, player, moves) {
   const occupied = new Set(boxes);
   let p = player;
@@ -288,8 +240,6 @@ function endOf(w, wall, boxes, player, moves) {
   }
   return { player: p, boxes: [...occupied].sort((a, b) => a - b) };
 }
-
-// A move-level A*: solves a level in the fewest steps, not the fewest pushes. The last resort.
 function solveMoves(board, maxStates) {
   const { w, wall, goals, player } = board;
   const goal = new Uint8Array(wall.length);
@@ -372,8 +322,6 @@ function solveMoves(board, maxStates) {
   }
   return null;
 }
-
-// One level's moves: room by room when the level is a set of rooms, else the fallbacks.
 function solve(text) {
   const level = parseLevel(text);
   const { w, wall, goals, player } = level;
@@ -407,7 +355,6 @@ function solve(text) {
       const end = endOf(w, wall, boxesNow, p, solved.moves);
       p = end.player;
       boxesNow = end.boxes;
-      // The room's boxes now stand on its goals; mark the room done by its goals.
       room.done = true;
     }
     if (ok) return moves;
@@ -417,7 +364,6 @@ function solve(text) {
   const any = solveMoves(level, ASTAR_STATES);
   return any ?? '';
 }
-
 for (const id of readdirSync(I).sort()) {
   const moves = solve(readFileSync(join(I, id, 'level.txt'), 'utf8'));
   mkdirSync(join(O, id), { recursive: true });
